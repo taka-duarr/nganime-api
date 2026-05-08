@@ -46,7 +46,9 @@ func SetupRoutes(r *gin.Engine) {
 		// Public: Get comments
 		comments.GET("/:anime_id", controllers.GetCommentsByAnime)
 		
-		// Protected: Add comment
+		// Protected: Add, Update, Delete comment
 		comments.POST("/", middleware.AuthMiddleware(), controllers.AddComment)
+		comments.PUT("/:id", middleware.AuthMiddleware(), controllers.UpdateComment)
+		comments.DELETE("/:id", middleware.AuthMiddleware(), controllers.DeleteComment)
 	}
 }

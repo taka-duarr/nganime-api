@@ -9,8 +9,9 @@ import (
 )
 
 type AddCommentInput struct {
-	AnimeID string `json:"anime_id" binding:"required"`
-	Content string `json:"content" binding:"required"`
+	AnimeID  string `json:"anime_id" binding:"required"`
+	Content  string `json:"content" binding:"required"`
+	ParentID *uint  `json:"parent_id"`
 }
 
 func AddComment(c *gin.Context) {
@@ -28,9 +29,10 @@ func AddComment(c *gin.Context) {
 	}
 
 	comment := models.Comment{
-		UserID:  userID.(uint),
-		AnimeID: input.AnimeID,
-		Content: input.Content,
+		UserID:   userID.(uint),
+		AnimeID:  input.AnimeID,
+		Content:  input.Content,
+		ParentID: input.ParentID,
 	}
 
 	if err := config.DB.Create(&comment).Error; err != nil {
@@ -47,6 +49,7 @@ func AddComment(c *gin.Context) {
 			"id":         comment.ID,
 			"anime_id":   comment.AnimeID,
 			"content":    comment.Content,
+			"parent_id":  comment.ParentID,
 			"created_at": comment.CreatedAt,
 			"user": gin.H{
 				"id":              comment.User.ID,
@@ -55,6 +58,61 @@ func AddComment(c *gin.Context) {
 			},
 		},
 	})
+}
+
+func UpdateComment(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	commentID := c.Param("id")
+
+	var input struct {
+		Content string `json:"content" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var comment models.Comment
+	if err := config.DB.First(&comment, commentID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Comment not found"})
+		return
+	}
+
+	// Check ownership
+	if comment.UserID != userID.(uint) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only edit your own comments"})
+		return
+	}
+
+	comment.Content = input.Content
+	config.DB.Save(&comment)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Comment updated successfully", "comment": comment})
+}
+
+func DeleteComment(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	commentID := c.Param("id")
+
+	var comment models.Comment
+	if err := config.DB.First(&comment, commentID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Comment not found"})
+		return
+	}
+
+	// Check ownership
+	if comment.UserID != userID.(uint) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only delete your own comments"})
+		return
+	}
+
+	// GORM handles cascade delete via constraint in model
+	if err := config.DB.Delete(&comment).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete comment"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Comment and its replies deleted successfully"})
 }
 
 func GetCommentsByAnime(c *gin.Context) {
@@ -67,13 +125,14 @@ func GetCommentsByAnime(c *gin.Context) {
 		return
 	}
 
-	// Format response to omit sensitive user data
+	// Format response
 	var response []gin.H
 	for _, comment := range comments {
 		response = append(response, gin.H{
 			"id":         comment.ID,
 			"anime_id":   comment.AnimeID,
 			"content":    comment.Content,
+			"parent_id":  comment.ParentID,
 			"created_at": comment.CreatedAt,
 			"user": gin.H{
 				"id":              comment.User.ID,
