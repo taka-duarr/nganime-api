@@ -49,5 +49,17 @@ func main() {
 		config.DB.Where("user_id = ? AND anime_id = ?", bookmarks[i].UserID, bookmarks[i].AnimeID).FirstOrCreate(&bookmarks[i])
 	}
 
+	// 3. Create Dummy Comments
+	comments := []models.Comment{
+		{UserID: user1.ID, AnimeID: "naruto", Content: "Naruto emang terbaik sih, apalagi arc Pain!"},
+		{UserID: user2.ID, AnimeID: "naruto", Content: "Setuju! Tapi Boruto agak kurang ya menurutku."},
+		{UserID: user2.ID, AnimeID: "one-piece", Content: "One Piece kapan tamatnya ya? Seru banget Wano Arc!"},
+		{UserID: user1.ID, AnimeID: "shingeki-no-kyojin", Content: "Endingnya bikin nyesek parah... Tatakae!"},
+	}
+
+	for i := range comments {
+		config.DB.Where("user_id = ? AND anime_id = ? AND content = ?", comments[i].UserID, comments[i].AnimeID, comments[i].Content).FirstOrCreate(&comments[i])
+	}
+
 	log.Println("✅ Data dummy berhasil ditambahkan ke database!")
 }

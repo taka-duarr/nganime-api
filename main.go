@@ -22,7 +22,7 @@ func main() {
 	config.ConnectDB()
 
 	// Auto Migrate the schema
-	err = config.DB.AutoMigrate(&models.User{}, &models.Bookmark{})
+	err = config.DB.AutoMigrate(&models.User{}, &models.Bookmark{}, &models.Comment{})
 	if err != nil {
 		log.Fatal("Failed to auto-migrate database schema:", err)
 	}
@@ -30,6 +30,9 @@ func main() {
 
 	// Initialize Gin engine
 	r := gin.Default()
+
+	// Serve static files for uploads
+	r.Static("/uploads", "./uploads")
 
 	// Setup Routes
 	routes.SetupRoutes(r)

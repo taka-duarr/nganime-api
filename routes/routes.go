@@ -32,4 +32,21 @@ func SetupRoutes(r *gin.Engine) {
 		bookmarks.GET("/", controllers.GetBookmarks)
 		bookmarks.DELETE("/:anime_id", controllers.RemoveBookmark)
 	}
+
+	// User routes (Protected)
+	users := api.Group("/users")
+	users.Use(middleware.AuthMiddleware())
+	{
+		users.POST("/profile-picture", controllers.UploadProfilePicture)
+	}
+
+	// Comment routes
+	comments := api.Group("/comments")
+	{
+		// Public: Get comments
+		comments.GET("/:anime_id", controllers.GetCommentsByAnime)
+		
+		// Protected: Add comment
+		comments.POST("/", middleware.AuthMiddleware(), controllers.AddComment)
+	}
 }
