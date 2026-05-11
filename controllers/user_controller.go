@@ -7,6 +7,7 @@ import (
 	"nganime-api/models"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,7 +28,7 @@ func UploadProfilePicture(c *gin.Context) {
 	}
 
 	// 2. Validate file type (basic extension check)
-	ext := filepath.Ext(file.Filename)
+	ext := strings.ToLower(filepath.Ext(file.Filename))
 	if ext != ".jpg" && ext != ".jpeg" && ext != ".png" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Only JPG, JPEG, and PNG files are allowed"})
 		return
