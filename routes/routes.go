@@ -37,6 +37,7 @@ func SetupRoutes(r *gin.Engine) {
 	users := api.Group("/users")
 	users.Use(middleware.AuthMiddleware())
 	{
+		users.GET("/profile", controllers.GetProfile)
 		users.POST("/profile-picture", controllers.UploadProfilePicture)
 	}
 

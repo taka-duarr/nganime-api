@@ -75,3 +75,26 @@ func UploadProfilePicture(c *gin.Context) {
 		"profile_picture": imageURL,
 	})
 }
+
+func GetProfile(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	var user models.User
+	if err := config.DB.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user": gin.H{
+			"id":              user.ID,
+			"username":        user.Username,
+			"profile_picture": user.ProfilePicture,
+		},
+	})
+}
+
