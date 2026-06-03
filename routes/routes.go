@@ -22,6 +22,7 @@ func SetupRoutes(r *gin.Engine) {
 	{
 		auth.POST("/register", controllers.Register)
 		auth.POST("/login", controllers.Login)
+		auth.POST("/refresh", controllers.RefreshToken)
 	}
 
 	// Bookmark routes (Protected)
