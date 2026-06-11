@@ -23,7 +23,7 @@ func main() {
 	config.ConnectDB()
 
 	// Auto Migrate the schema
-	err = config.DB.AutoMigrate(&models.User{}, &models.Bookmark{}, &models.Comment{})
+	err = config.DB.AutoMigrate(&models.User{}, &models.Bookmark{}, &models.Comment{}, &models.WatchHistory{})
 	if err != nil {
 		log.Fatal("Failed to auto-migrate database schema:", err)
 	}

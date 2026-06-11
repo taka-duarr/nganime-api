@@ -42,6 +42,14 @@ func SetupRoutes(r *gin.Engine) {
 		users.POST("/profile-picture", controllers.UploadProfilePicture)
 	}
 
+	// Watch History routes (Protected)
+	history := api.Group("/history")
+	history.Use(middleware.AuthMiddleware())
+	{
+		history.POST("/", controllers.MarkAsWatched)
+		history.GET("/:anime_id", controllers.GetWatchedEpisodes)
+	}
+
 	// Comment routes
 	comments := api.Group("/comments")
 	{
