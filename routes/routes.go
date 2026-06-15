@@ -61,4 +61,8 @@ func SetupRoutes(r *gin.Engine) {
 		comments.PUT("/:id", middleware.AuthMiddleware(), controllers.UpdateComment)
 		comments.DELETE("/:id", middleware.AuthMiddleware(), controllers.DeleteComment)
 	}
+
+	// Anime API Proxy (Public) — untuk menghindari CORS di Web Browser
+	// Semua request ke /api/proxy/* akan diteruskan ke Sanka Vollerei API
+	api.Any("/proxy/*path", controllers.ProxyAnimeAPI)
 }
