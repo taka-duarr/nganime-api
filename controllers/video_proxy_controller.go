@@ -139,18 +139,27 @@ func cleanPlayerHTML(m3u8URL string) string {
 <title>NgAnime Player</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%%;height:100%%;background:#000;overflow:hidden}
+html,body{width:100%%;height:100%%;background:#000;overflow:hidden;color:white;font-family:sans-serif}
 video{width:100%%;height:100%%;object-fit:contain;background:#000}
+#debug{position:absolute;top:0;left:0;z-index:9999;background:rgba(0,0,0,0.8);padding:10px;font-size:12px;width:100%%;height:30%%;overflow-y:auto;pointer-events:none;}
 </style>
 </head>
 <body>
+<div id="debug">Initializing...</div>
 <video id="video" controls autoplay playsinline></video>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 <script>
 (function(){
+  var debugEl = document.getElementById('debug');
+  function log(msg) {
+    debugEl.innerHTML += '<br/>' + msg;
+  }
   var video = document.getElementById('video');
-  var src = %q;
+  var src = "%s";
+  log("Target URL: " + src.substring(0,50) + "...");
+  
   if(Hls.isSupported()){
+    log("Hls.js is supported");
     var hls = new Hls({
       maxBufferLength: 30,
       maxMaxBufferLength: 60,
@@ -158,17 +167,19 @@ video{width:100%%;height:100%%;object-fit:contain;background:#000}
     hls.loadSource(src);
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, function(){
-      video.play().catch(function(){});
+      log("Manifest parsed. Trying to play...");
+      video.play().then(()=>log("Playback started")).catch(function(e){ log("Play error: " + e.message); });
     });
     hls.on(Hls.Events.ERROR, function(event, data){
+      log("HLS Error: " + data.type + " - " + data.details);
       if(data.fatal){
         switch(data.type){
           case Hls.ErrorTypes.NETWORK_ERROR:
-            console.log('Network error, trying to recover...');
+            log("Fatal network error, recovering...");
             hls.startLoad();
             break;
           case Hls.ErrorTypes.MEDIA_ERROR:
-            console.log('Media error, trying to recover...');
+            log("Fatal media error, recovering...");
             hls.recoverMediaError();
             break;
           default:
@@ -178,10 +189,13 @@ video{width:100%%;height:100%%;object-fit:contain;background:#000}
       }
     });
   } else if(video.canPlayType('application/vnd.apple.mpegurl')){
+    log("Native HLS supported");
     video.src = src;
     video.addEventListener('loadedmetadata', function(){
-      video.play().catch(function(){});
+      video.play().catch(function(e){ log("Play error: " + e.message); });
     });
+  } else {
+    log("HLS is NOT supported in this browser!");
   }
 })();
 </script>
