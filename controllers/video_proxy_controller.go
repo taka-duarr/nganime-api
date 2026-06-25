@@ -103,7 +103,12 @@ func ProxyVideoEmbed(c *gin.Context) {
 		return match
 	})
 
-	// 3. Block all onclick redirect attempts via injected override script at the top of <body>
+	// 4. Remove heavily obfuscated scripts (often used by aggressive ad networks)
+	// Matches common JS obfuscation patterns like `var _0x1234=` or packed scripts `eval(function(p,a,c,k,e,d))`
+	obfuscatedRegex := regexp.MustCompile(`(?is)<script[^>]*>.*?(_0x[0-9a-fA-F]+|eval\(function\(p,a,c,k,e,d\)).*?</script>`)
+	html = obfuscatedRegex.ReplaceAllString(html, "<!-- obfuscated ad script removed -->")
+
+	// 5. Block all onclick redirect attempts via injected override script at the top of <body>
 	antiRedirectScript := `<script>
 // Anti-ad redirect injected by NgAnime proxy
 (function() {
