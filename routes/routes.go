@@ -65,4 +65,7 @@ func SetupRoutes(r *gin.Engine) {
 	// Anime API Proxy (Public) — untuk menghindari CORS di Web Browser
 	// Semua request ke /api/proxy/* akan diteruskan ke Sanka Vollerei API
 	api.Any("/proxy/*path", controllers.ProxyAnimeAPI)
+
+	// Video Embed Proxy — fetch & strip iklan dari halaman embed video pihak ketiga
+	api.GET("/video-proxy", controllers.ProxyVideoEmbed)
 }
