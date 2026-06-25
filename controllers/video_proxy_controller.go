@@ -6,12 +6,191 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-// ProxyVideoEmbed fetches a video embed page and strips ad/redirect scripts before serving it.
+// unpackDictionary extracts the dictionary from a Dean Edwards packed script.
+// The packed format is: eval(function(p,a,c,k,e,d){...}('code',base,count,'dict'.split('|')))
+func unpackDictionary(html string) (packedCode string, items []string, base int, ok bool) {
+	// Find the eval(function(p,a,c,k,e,d) block
+	evalRe := regexp.MustCompile(`eval\(function\(p,a,c,k,e,d\).*?'([^']+)'\.split\('\|'\)\)`)
+	evalMatch := evalRe.FindStringSubmatch(html)
+	if len(evalMatch) < 2 {
+		return "", nil, 0, false
+	}
+	items = strings.Split(evalMatch[1], "|")
+
+	// Extract the packed code and base
+	codeRe := regexp.MustCompile(`\}\('(.*?)',(\d+),(\d+),'`)
+	codeMatch := codeRe.FindStringSubmatch(html)
+	if len(codeMatch) < 3 {
+		return "", nil, 0, false
+	}
+	packedCode = codeMatch[1]
+	base, _ = strconv.Atoi(codeMatch[2])
+	return packedCode, items, base, true
+}
+
+// decodeWord converts a base-N encoded word back to its dictionary index
+func decodeWord(word string, base int) (int, bool) {
+	n := 0
+	for _, c := range word {
+		var d int
+		if c >= '0' && c <= '9' {
+			d = int(c - '0')
+		} else if c >= 'a' && c <= 'z' {
+			d = int(c-'a') + 10
+		} else if c >= 'A' && c <= 'Z' {
+			d = int(c-'A') + 36
+		} else {
+			return 0, false
+		}
+		if d >= base {
+			return 0, false
+		}
+		n = n*base + d
+	}
+	return n, true
+}
+
+// decodePacked decodes a Dean Edwards packed script using its dictionary
+func decodePacked(code string, items []string, base int) string {
+	wordRe := regexp.MustCompile(`\b\w+\b`)
+	return wordRe.ReplaceAllStringFunc(code, func(word string) string {
+		idx, ok := decodeWord(word, base)
+		if ok && idx < len(items) && items[idx] != "" {
+			return items[idx]
+		}
+		return word
+	})
+}
+
+// extractM3U8FromEmbed fetches an embed page and extracts the m3u8 stream URL
+func extractM3U8FromEmbed(embedURL string) (string, error) {
+	parsedURL, err := url.ParseRequestURI(embedURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL: %v", err)
+	}
+
+	req, err := http.NewRequest("GET", embedURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", fmt.Sprintf("%s://%s/", parsedURL.Scheme, parsedURL.Host))
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch embed page: %v", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %v", err)
+	}
+	html := string(bodyBytes)
+
+	// Try to find packed script and decode it
+	packedCode, items, base, ok := unpackDictionary(html)
+	if ok {
+		decoded := decodePacked(packedCode, items, base)
+
+		// Try to find hls2 URL (full URL with token, usually the best)
+		hls2Re := regexp.MustCompile(`"hls2":"(https?://[^"]+\.m3u8[^"]*)"`)
+		if m := hls2Re.FindStringSubmatch(decoded); len(m) > 1 {
+			return m[1], nil
+		}
+
+		// Try hls3
+		hls3Re := regexp.MustCompile(`"hls3":"(https?://[^"]+)"`)
+		if m := hls3Re.FindStringSubmatch(decoded); len(m) > 1 {
+			return m[1], nil
+		}
+
+		// Try any URL ending in .m3u8
+		m3u8Re := regexp.MustCompile(`(https?://[^\s"']+\.m3u8[^\s"']*)`)
+		if m := m3u8Re.FindStringSubmatch(decoded); len(m) > 1 {
+			return m[1], nil
+		}
+	}
+
+	// Fallback: try to find m3u8 URL directly in the raw HTML
+	directRe := regexp.MustCompile(`(https?://[^\s"']+\.m3u8[^\s"']*)`)
+	if m := directRe.FindStringSubmatch(html); len(m) > 1 {
+		return m[1], nil
+	}
+
+	return "", fmt.Errorf("could not find m3u8 stream URL in embed page")
+}
+
+// cleanPlayerHTML generates a minimal, ad-free video player page using HLS.js
+func cleanPlayerHTML(m3u8URL string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NgAnime Player</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%%;height:100%%;background:#000;overflow:hidden}
+video{width:100%%;height:100%%;object-fit:contain;background:#000}
+</style>
+</head>
+<body>
+<video id="video" controls autoplay playsinline></video>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+<script>
+(function(){
+  var video = document.getElementById('video');
+  var src = %q;
+  if(Hls.isSupported()){
+    var hls = new Hls({
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+    });
+    hls.loadSource(src);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, function(){
+      video.play().catch(function(){});
+    });
+    hls.on(Hls.Events.ERROR, function(event, data){
+      if(data.fatal){
+        switch(data.type){
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            console.log('Network error, trying to recover...');
+            hls.startLoad();
+            break;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            console.log('Media error, trying to recover...');
+            hls.recoverMediaError();
+            break;
+          default:
+            hls.destroy();
+            break;
+        }
+      }
+    });
+  } else if(video.canPlayType('application/vnd.apple.mpegurl')){
+    video.src = src;
+    video.addEventListener('loadedmetadata', function(){
+      video.play().catch(function(){});
+    });
+  }
+})();
+</script>
+</body>
+</html>`, m3u8URL)
+}
+
+// ProxyVideoEmbed fetches a video embed page, extracts the raw m3u8 stream URL,
+// and serves a completely clean video player with zero ads.
 // Usage: GET /api/video-proxy?url=<encoded-embed-url>
 func ProxyVideoEmbed(c *gin.Context) {
 	rawURL := c.Query("url")
@@ -27,7 +206,23 @@ func ProxyVideoEmbed(c *gin.Context) {
 		return
 	}
 
-	// Fetch the embed page pretending to be a regular browser
+	// Try to extract the m3u8 stream URL
+	m3u8URL, err := extractM3U8FromEmbed(rawURL)
+	if err != nil {
+		// Fallback: proxy the original page as-is (for non-packed embed pages)
+		fallbackProxy(c, rawURL, parsedURL)
+		return
+	}
+
+	// Serve a clean player page
+	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("X-Frame-Options", "ALLOWALL")
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(cleanPlayerHTML(m3u8URL)))
+}
+
+// fallbackProxy is the old behavior: fetch and forward the embed page for
+// video providers that don't use packed scripts (e.g. filedon.co)
+func fallbackProxy(c *gin.Context, rawURL string, parsedURL *url.URL) {
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
@@ -35,123 +230,30 @@ func ProxyVideoEmbed(c *gin.Context) {
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 	req.Header.Set("Referer", fmt.Sprintf("%s://%s/", parsedURL.Scheme, parsedURL.Host))
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch video page", "detail": err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch video page"})
 		return
 	}
 	defer resp.Body.Close()
 
 	contentType := resp.Header.Get("Content-Type")
 
-	// If not HTML, just stream it through (e.g. m3u8, mp4, etc.)
 	if !strings.Contains(contentType, "text/html") {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.DataFromReader(resp.StatusCode, resp.ContentLength, contentType, resp.Body, nil)
 		return
 	}
 
-	// Read full HTML
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
 		return
 	}
-	html := string(bodyBytes)
 
-	// ─── Strip Ad Scripts ────────────────────────────────────────────────────
-
-	// 1. Remove <script> blocks that contain known ad/popup patterns
-	adPatterns := []string{
-		"window.open", "window.top.location", "window.parent.location",
-		"top.location", "self.location", "document.location",
-		"popunder", "popupunder", "popUnder",
-		"adnxs", "googlesyndication", "doubleclick",
-		"onclick.*window", "adsbygoogle",
-		"exoclick", "trafficjunky", "trafficstars",
-		"juicyads", "hilltopads", "propellerads",
-	}
-
-	// Remove inline <script>...</script> blocks containing ad keywords
-	scriptTagRegex := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
-	html = scriptTagRegex.ReplaceAllStringFunc(html, func(match string) string {
-		lowerMatch := strings.ToLower(match)
-		for _, pattern := range adPatterns {
-			if strings.Contains(lowerMatch, strings.ToLower(pattern)) {
-				return "<!-- ad script removed -->"
-			}
-		}
-		return match
-	})
-
-	// 2. Remove <script src="..."> tags pointing to known ad networks
-	adSrcPatterns := []string{
-		"googlesyndication", "doubleclick", "adnxs", "exoclick",
-		"trafficjunky", "trafficstars", "juicyads", "hilltopads",
-		"propellerads", "adsterra", "popads", "popcash",
-	}
-	externalScriptRegex := regexp.MustCompile(`(?i)<script[^>]+src="([^"]*)"[^>]*>.*?</script>`)
-	html = externalScriptRegex.ReplaceAllStringFunc(html, func(match string) string {
-		for _, pattern := range adSrcPatterns {
-			if strings.Contains(strings.ToLower(match), strings.ToLower(pattern)) {
-				return "<!-- external ad script removed -->"
-			}
-		}
-		return match
-	})
-
-	// 4. Inject aggressive CSS to hide invisible clickjacking overlays commonly used by obfuscated ads
-	// Ad overlays usually use z-index: 2147483647 to cover the entire player.
-	antiAdCss := `<style>
-		/* Hide transparent clickjacking overlays */
-		div[style*="2147483647"], div[style*="z-index: 2147483647"], div[style*="z-index:2147483647"] {
-			display: none !important;
-			pointer-events: none !important;
-			width: 0 !important;
-			height: 0 !important;
-		}
-	</style>`
-	
-	html = strings.Replace(html, "</head>", antiAdCss+"</head>", 1)
-	html = strings.Replace(html, "</HEAD>", antiAdCss+"</HEAD>", 1)
-
-	// 5. Block all onclick redirect attempts via injected override script at the top of <body>
-	antiRedirectScript := `<script>
-// Anti-ad redirect injected by NgAnime proxy
-(function() {
-  // Block window.open popups
-  window.open = function() { return null; };
-  // Block top/parent navigation
-  try { Object.defineProperty(window, 'top', { get: function() { return window; } }); } catch(e) {}
-  try { Object.defineProperty(window, 'parent', { get: function() { return window; } }); } catch(e) {}
-  // Intercept all link clicks and block ones leading to other domains
-  document.addEventListener('click', function(e) {
-    var el = e.target;
-    while (el && el.tagName !== 'A') { el = el.parentElement; }
-    if (el && el.href) {
-      try {
-        var linkHost = new URL(el.href).host;
-        if (linkHost !== window.location.host) {
-          e.preventDefault();
-          e.stopPropagation();
-          return false;
-        }
-      } catch(err) {}
-    }
-  }, true);
-})();
-</script>`
-
-	// Inject right after <body>
-	html = strings.Replace(html, "<body", "<body", 1)
-	bodyTagRegex := regexp.MustCompile(`(?i)(<body[^>]*>)`)
-	html = bodyTagRegex.ReplaceAllString(html, `$1`+antiRedirectScript)
-
-	// ─── Serve cleaned HTML ──────────────────────────────────────────────────
 	c.Header("Access-Control-Allow-Origin", "*")
 	c.Header("X-Frame-Options", "ALLOWALL")
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", bodyBytes)
 }
