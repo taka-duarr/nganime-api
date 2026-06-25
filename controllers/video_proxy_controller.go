@@ -103,10 +103,20 @@ func ProxyVideoEmbed(c *gin.Context) {
 		return match
 	})
 
-	// 4. Remove heavily obfuscated scripts (often used by aggressive ad networks)
-	// Matches common JS obfuscation patterns like `var _0x1234=` or packed scripts `eval(function(p,a,c,k,e,d))`
-	obfuscatedRegex := regexp.MustCompile(`(?is)<script[^>]*>.*?(_0x[0-9a-fA-F]+|eval\(function\(p,a,c,k,e,d\)).*?</script>`)
-	html = obfuscatedRegex.ReplaceAllString(html, "<!-- obfuscated ad script removed -->")
+	// 4. Inject aggressive CSS to hide invisible clickjacking overlays commonly used by obfuscated ads
+	// Ad overlays usually use z-index: 2147483647 to cover the entire player.
+	antiAdCss := `<style>
+		/* Hide transparent clickjacking overlays */
+		div[style*="2147483647"], div[style*="z-index: 2147483647"], div[style*="z-index:2147483647"] {
+			display: none !important;
+			pointer-events: none !important;
+			width: 0 !important;
+			height: 0 !important;
+		}
+	</style>`
+	
+	html = strings.Replace(html, "</head>", antiAdCss+"</head>", 1)
+	html = strings.Replace(html, "</HEAD>", antiAdCss+"</HEAD>", 1)
 
 	// 5. Block all onclick redirect attempts via injected override script at the top of <body>
 	antiRedirectScript := `<script>
