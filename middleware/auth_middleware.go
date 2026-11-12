@@ -3,12 +3,21 @@ package middleware
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
+
+	"nganime-api/config"
+	"nganime-api/services"
+	"nganime-api/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// IsSessionActive memeriksa sesi ke database. Dibuat sebagai variabel agar bisa
+// diganti di tes tanpa database.
+var IsSessionActive = func(sessionID uint) bool {
+	return services.IsSessionActive(config.DB, sessionID)
+}
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -27,10 +36,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		tokenString := parts[1]
-		secret := os.Getenv("JWT_SECRET")
-		if secret == "" {
-			secret = "default_secret_key"
-		}
+		secret := utils.GetSecret()
 
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -52,7 +58,34 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		c.Set("user_id", uint(claims["user_id"].(float64)))
+		// Refresh Token tidak boleh dipakai untuk mengakses API (hanya untuk /auth/refresh)
+		if tokenType, _ := claims["type"].(string); tokenType == "refresh" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
+
+		userID, ok := claims["user_id"].(float64)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
+			c.Abort()
+			return
+		}
+
+		// Access token terikat ke sesi: sesi yang sudah dicabut (logout / logout semua
+		// perangkat / pencurian token terdeteksi) langsung menolak access token-nya.
+		// Token lama tanpa "sid" (diterbitkan sebelum sistem sesi) tetap diterima sampai
+		// kedaluwarsa dan akan diganti token bersesi saat refresh.
+		if sid, hasSID := claims["sid"].(float64); hasSID && sid > 0 {
+			if !IsSessionActive(uint(sid)) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Session revoked or expired"})
+				c.Abort()
+				return
+			}
+			c.Set("session_id", uint(sid))
+		}
+
+		c.Set("user_id", uint(userID))
 		c.Next()
 	}
 }

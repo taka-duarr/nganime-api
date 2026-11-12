@@ -23,6 +23,10 @@ func SetupRoutes(r *gin.Engine) {
 		auth.POST("/register", controllers.Register)
 		auth.POST("/login", controllers.Login)
 		auth.POST("/refresh", controllers.RefreshToken)
+		// Logout satu perangkat: pakai refresh token (access token mungkin sudah kedaluwarsa)
+		auth.POST("/logout", controllers.Logout)
+		// Logout semua perangkat: butuh access token yang masih sah
+		auth.POST("/logout-all", middleware.AuthMiddleware(), controllers.LogoutAll)
 	}
 
 	// Bookmark routes (Protected)
