@@ -1,13 +1,16 @@
 package controllers
 
 import (
+	"encoding/json"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -129,8 +132,65 @@ func extractM3U8FromEmbed(embedURL string) (string, error) {
 	return "", fmt.Errorf("could not find m3u8 stream URL in embed page")
 }
 
-// cleanPlayerHTML generates a minimal, ad-free video player page using HLS.js
-func cleanPlayerHTML(m3u8URL string) string {
+// isFiledonHost reports whether the host belongs to filedon.co (embed player with ads).
+func isFiledonHost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "filedon.co" || strings.HasSuffix(host, ".filedon.co")
+}
+
+// extractFiledonVideo fetches a filedon embed page and returns the direct (signed)
+// video file URL. The embed page is an Inertia app: the page state, including the
+// video URL in `props.url`, is embedded as JSON in the `data-page` attribute, so the
+// ad scripts on the page never need to run.
+func extractFiledonVideo(embedURL string) (string, error) {
+	parsedURL, err := url.ParseRequestURI(embedURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL: %v", err)
+	}
+
+	req, err := http.NewRequest("GET", embedURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", fmt.Sprintf("%s://%s/", parsedURL.Scheme, parsedURL.Host))
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch embed page: %v", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %v", err)
+	}
+
+	m := regexp.MustCompile(`data-page="([^"]+)"`).FindSubmatch(bodyBytes)
+	if len(m) < 2 {
+		return "", fmt.Errorf("data-page not found in filedon embed page")
+	}
+
+	var page struct {
+		Props struct {
+			URL string `json:"url"`
+		} `json:"props"`
+	}
+	if err := json.Unmarshal([]byte(stdhtml.UnescapeString(string(m[1]))), &page); err != nil {
+		return "", fmt.Errorf("failed to parse filedon page data: %v", err)
+	}
+	if !strings.HasPrefix(page.Props.URL, "http") {
+		return "", fmt.Errorf("video url not found in filedon page data")
+	}
+	return page.Props.URL, nil
+}
+
+// cleanPlayerHTML generates a minimal, ad-free video player page.
+// videoURL may be an HLS playlist (.m3u8, played with HLS.js) or a direct video file (mp4).
+func cleanPlayerHTML(videoURL string) string {
+	// Encode as a JS string literal so characters like quotes or & can't break the script.
+	srcJSON, _ := json.Marshal(videoURL)
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -141,7 +201,7 @@ func cleanPlayerHTML(m3u8URL string) string {
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%%;height:100%%;background:#000;overflow:hidden;color:white;font-family:sans-serif}
 video{width:100%%;height:100%%;object-fit:contain;background:#000}
-#debug{position:absolute;top:0;left:0;z-index:9999;background:rgba(0,0,0,0.8);padding:10px;font-size:12px;width:100%%;height:30%%;overflow-y:auto;pointer-events:none;}
+#debug{display:none;position:absolute;top:0;left:0;z-index:9999;background:rgba(0,0,0,0.8);padding:10px;font-size:12px;width:100%%;height:30%%;overflow-y:auto;pointer-events:none;}
 </style>
 </head>
 <body>
@@ -155,10 +215,14 @@ video{width:100%%;height:100%%;object-fit:contain;background:#000}
     debugEl.innerHTML += '<br/>' + msg;
   }
   var video = document.getElementById('video');
-  var src = "%s";
+  var src = %s;
   log("Target URL: " + src.substring(0,50) + "...");
-  
-  if(Hls.isSupported()){
+
+  if(!/\.m3u8/i.test(src)){
+    log("Direct video file");
+    video.src = src;
+    video.play().catch(function(e){ log("Play error: " + e.message); });
+  } else if(Hls.isSupported()){
     log("Hls.js is supported");
     var hls = new Hls({
       maxBufferLength: 30,
@@ -200,7 +264,7 @@ video{width:100%%;height:100%%;object-fit:contain;background:#000}
 })();
 </script>
 </body>
-</html>`, m3u8URL)
+</html>`, string(srcJSON))
 }
 
 // ProxyVideoEmbed fetches a video embed page, extracts the raw m3u8 stream URL,
@@ -218,6 +282,17 @@ func ProxyVideoEmbed(c *gin.Context) {
 	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid URL"})
 		return
+	}
+
+	// Filedon: pull the direct video file out of the page data and serve a clean player
+	if isFiledonHost(parsedURL.Host) {
+		if videoURL, ferr := extractFiledonVideo(rawURL); ferr == nil {
+			c.Header("Access-Control-Allow-Origin", "*")
+			c.Header("X-Frame-Options", "ALLOWALL")
+			c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(cleanPlayerHTML(videoURL)))
+			return
+		}
+		// extraction failed: fall through to the generic handling below
 	}
 
 	// Try to extract the m3u8 stream URL
